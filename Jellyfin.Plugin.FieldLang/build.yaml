@@ -1,0 +1,17 @@
+---
+name: "Field Language"
+guid: "6b2f4a3c-9d51-4f27-8a6e-1c0d7b5e93a4"
+version: "1.0.0.0"
+targetAbi: "10.11.0.0"
+framework: "net9.0"
+owner: "rbcetin"
+overview: "Per-field metadata language"
+description: >
+  Pull individual metadata fields in different languages. Keep titles in English while
+  descriptions come in your own language, or any other combination, configured per library
+  and per item type.
+category: "Metadata"
+artifacts:
+  - "Jellyfin.Plugin.FieldLang.dll"
+changelog: >
+  Initial release.

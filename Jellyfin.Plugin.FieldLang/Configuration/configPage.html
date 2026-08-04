@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Field Language</title>
+</head>
+<body>
+<!-- No data-controller here on purpose. That attribute makes Jellyfin's view manager load a
+     separate JS module and drive the page lifecycle from it; pointing it at a file the plugin
+     does not ship means the controller 404s and the inline script below never gets its pageshow.
+     Either ship a controller .js as its own embedded resource, or use an inline script and omit
+     the attribute -- not one with the other. -->
+<div id="FieldLangConfigPage" data-role="page" class="page type-interior pluginConfigurationPage">
+    <style>
+        .fieldLangLib { border-bottom: 1px solid rgba(127,127,127,.3); }
+        .fieldLangSummary {
+            display: flex; align-items: center; justify-content: space-between;
+            gap: 1em; padding: .9em .2em; cursor: pointer; user-select: none;
+        }
+        .fieldLangSummary:hover { background: rgba(127,127,127,.08); }
+        .fieldLangLibName { font-weight: 600; }
+        .fieldLangCount { opacity: .6; font-size: .9em; }
+        .fieldLangBody { padding: .3em 0 1.2em 1.2em; }
+        .fieldLangType {
+            margin: .9em 0 .35em; opacity: .65;
+            font-size: .85em; text-transform: uppercase; letter-spacing: .05em;
+        }
+        .fieldLangRow { display: flex; align-items: center; gap: 1em; margin-bottom: .4em; }
+        .fieldLangLabel { min-width: 8em; margin: 0; }
+        .fieldLangInput { max-width: 9em; }
+        .fieldLangNote { opacity: .55; font-size: .85em; }
+        .fieldLangLock { display: flex; align-items: center; gap: .35em; margin: 0; opacity: .8; }
+        .fieldLangLock span { font-size: .85em; }
+    </style>
+    <div data-role="content">
+        <div class="content-primary">
+            <form id="FieldLangConfigForm">
+
+                <div class="inputContainer">
+                    <label class="inputLabel inputLabelUnfocused" for="txtTmdbApiKey">TMDb API key</label>
+                    <input is="emby-input" type="text" id="txtTmdbApiKey" name="txtTmdbApiKey" />
+                    <div class="fieldDescription">
+                        Required. Jellyfin's built-in TMDb key is compiled into the server assembly and
+                        cannot be reached from a plugin, so this plugin needs its own. A free v3 key works
+                        &mdash; register at
+                        <a is="emby-linkbutton" class="button-link" target="_blank" rel="noopener noreferrer"
+                           href="https://www.themoviedb.org/signup">themoviedb.org/signup</a>,
+                        then copy the <em>API Read Access</em> v3 key from
+                        <a is="emby-linkbutton" class="button-link" target="_blank" rel="noopener noreferrer"
+                           href="https://www.themoviedb.org/settings/api">Settings &rarr; API</a>.
+                        Nothing is sent anywhere except TMDb.
+                    </div>
+                </div>
+
+                <div class="fieldDescription" style="margin-top:1em;">
+                    Rules are applied by the <strong>Apply per-field metadata languages</strong> scheduled
+                    task, which runs daily by default. Run it from
+                    Dashboard &rarr; Scheduled Tasks to apply changes immediately, or add triggers there
+                    to run it more often.
+                </div>
+
+                <br />
+                <h3>Rules</h3>
+                <div class="fieldDescription" style="margin-bottom:1.5em;">
+                    Leave a language blank to leave that field alone &mdash; the plugin only touches fields
+                    you give a language. Use an ISO 639-1 code, optionally region-qualified: <code>tr</code>,
+                    <code>en</code>, <code>de</code>, <code>pt-BR</code>. If TMDb has no data for a field in
+                    the language you pick, the existing value is kept rather than blanked.
+                    <br /><br />
+                    <strong>Lock</strong> pins that one field so the normal metadata provider stops
+                    overwriting it. Unlocked, the provider rewrites it on every refresh and this plugin
+                    puts it back on the next run &mdash; still correct, but the wrong language is visible
+                    in between. Tagline has no lock in Jellyfin, so it always works the second way.
+                </div>
+
+                <div id="FieldLangRules"></div>
+
+                <div>
+                    <button is="emby-button" type="submit" class="raised button-submit block emby-button">
+                        <span>Save</span>
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script type="text/javascript">
+        (function () {
+            var pluginId = '6b2f4a3c-9d51-4f27-8a6e-1c0d7b5e93a4';
+
+            function esc(s) {
+                return String(s === null || s === undefined ? '' : s)
+                    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+            }
+
+            // Built as an HTML string rather than createElement on purpose: assigning innerHTML
+            // lets the parser upgrade customized built-ins like is="emby-input". Elements made
+            // with document.createElement('input') + setAttribute('is', ...) are never upgraded,
+            // so they would render as unstyled inputs.
+            function buildRules(container, schema, config) {
+                // Index saved rules for quick lookup: libraryId -> itemType -> field -> rule
+                var saved = {};
+                (config.Libraries || []).forEach(function (lib) {
+                    saved[lib.LibraryId] = saved[lib.LibraryId] || {};
+                    (lib.Rules || []).forEach(function (r) {
+                        saved[lib.LibraryId][r.ItemType] = saved[lib.LibraryId][r.ItemType] || {};
+                        saved[lib.LibraryId][r.ItemType][r.Field] = r;
+                    });
+                });
+
+                var html = '';
+
+                schema.Libraries.forEach(function (lib) {
+                    var types = schema.ItemTypes.filter(function (t) {
+                        return typeAppliesTo(lib.CollectionType, t.Name);
+                    });
+
+                    if (!types.length) {
+                        return;
+                    }
+
+                    var setCount = 0;
+                    var body = '';
+
+                    types.forEach(function (type) {
+                        body += '<div class="fieldLangType">' + esc(type.Name) + '</div>';
+
+                        type.Fields.forEach(function (field) {
+                            var rule = (saved[lib.Id] && saved[lib.Id][type.Name]
+                                && saved[lib.Id][type.Name][field.Name]) || null;
+                            var val = rule ? rule.Language : '';
+                            // New rows default to locked; that matches the server-side default.
+                            var locked = rule ? rule.Lock !== false : true;
+
+                            if (val) {
+                                setCount++;
+                            }
+
+                            body += '<div class="fieldLangRow">'
+                                + '<label class="fieldLangLabel">' + esc(field.Label) + '</label>'
+                                + '<input is="emby-input" type="text" class="fieldLangInput"'
+                                + ' placeholder="default"'
+                                + ' data-library="' + esc(lib.Id) + '"'
+                                + ' data-library-name="' + esc(lib.Name) + '"'
+                                + ' data-type="' + esc(type.Name) + '"'
+                                + ' data-field="' + esc(field.Name) + '"'
+                                + ' value="' + esc(val) + '" />'
+                                + (field.Lockable
+                                    ? '<label class="fieldLangLock"><input is="emby-checkbox" type="checkbox"'
+                                        + ' data-lock-for="' + esc(lib.Id + '|' + type.Name + '|' + field.Name) + '"'
+                                        + (locked ? ' checked' : '') + ' /><span>lock</span></label>'
+                                    : '<span class="fieldLangNote">cannot be locked</span>')
+                                + '</div>';
+                        });
+                    });
+
+                    // Open the ones that already do something; leave the rest collapsed so the
+                    // page reads as a short list of libraries instead of a wall of inputs.
+                    html += '<details class="fieldLangLib"' + (setCount ? ' open' : '') + '>'
+                        + '<summary class="fieldLangSummary">'
+                        + '<span class="fieldLangLibName">' + esc(lib.Name) + '</span>'
+                        + '<span class="fieldLangCount" data-count-for="' + esc(lib.Id) + '">'
+                        + (setCount ? setCount + (setCount === 1 ? ' rule' : ' rules') : 'no rules')
+                        + '</span>'
+                        + '</summary>'
+                        + '<div class="fieldLangBody">' + body + '</div>'
+                        + '</details>';
+                });
+
+                container.innerHTML = html;
+
+                // Keep each header's badge honest as the user types.
+                container.addEventListener('input', function (e) {
+                    var input = e.target;
+                    if (!input || !input.getAttribute || !input.getAttribute('data-field')) {
+                        return;
+                    }
+
+                    var libId = input.getAttribute('data-library');
+                    var n = 0;
+                    container.querySelectorAll('input[data-library="' + libId + '"]').forEach(function (i) {
+                        if (i.value.trim()) {
+                            n++;
+                        }
+                    });
+
+                    var badge = container.querySelector('[data-count-for="' + libId + '"]');
+                    if (badge) {
+                        badge.textContent = n ? n + (n === 1 ? ' rule' : ' rules') : 'no rules';
+                    }
+                });
+            }
+
+            // Library kinds that hold none of the item types this plugin can localize. Rendering
+            // controls for them would only offer settings that could never fire.
+            var IRRELEVANT = ['boxsets', 'playlists', 'livetv', 'music', 'musicvideos', 'books',
+                              'photos', 'homevideos', 'folders'];
+
+            function typeAppliesTo(collectionType, itemType) {
+                var ct = (collectionType || '').toLowerCase();
+                if (IRRELEVANT.indexOf(ct) !== -1) {
+                    return false;
+                }
+                if (ct === 'movies') {
+                    return itemType === 'Movie';
+                }
+                if (ct === 'tvshows') {
+                    return itemType === 'Series' || itemType === 'Season' || itemType === 'Episode';
+                }
+                // Mixed or unknown library: offer everything rather than guess wrong.
+                return true;
+            }
+
+            function collectRules(container) {
+                var byLibrary = {};
+
+                container.querySelectorAll('input[data-field]').forEach(function (input) {
+                    var lang = (input.value || '').trim();
+                    if (!lang) {
+                        return;
+                    }
+
+                    var id = input.getAttribute('data-library');
+                    var type = input.getAttribute('data-type');
+                    var field = input.getAttribute('data-field');
+
+                    if (!byLibrary[id]) {
+                        byLibrary[id] = {
+                            LibraryId: id,
+                            LibraryName: input.getAttribute('data-library-name'),
+                            Rules: []
+                        };
+                    }
+
+                    // Fields Jellyfin cannot lock have no checkbox; persist false for them so the
+                    // saved rule says what actually happens rather than an aspirational true.
+                    var lock = container.querySelector(
+                        '[data-lock-for="' + id + '|' + type + '|' + field + '"]');
+
+                    byLibrary[id].Rules.push({
+                        ItemType: type,
+                        Field: field,
+                        Language: lang,
+                        Lock: lock ? lock.checked : false
+                    });
+                });
+
+                return Object.keys(byLibrary).map(function (k) { return byLibrary[k]; });
+            }
+
+            function load(page) {
+                Dashboard.showLoadingMsg();
+
+                Promise.all([
+                    ApiClient.getPluginConfiguration(pluginId),
+                    ApiClient.getJSON(ApiClient.getUrl('FieldLang/Schema'))
+                ]).then(function (results) {
+                    var config = results[0];
+                    var schema = results[1];
+
+                    page.querySelector('#txtTmdbApiKey').value = config.TmdbApiKey || '';
+
+                    buildRules(page.querySelector('#FieldLangRules'), schema, config);
+                    Dashboard.hideLoadingMsg();
+                }).catch(function () {
+                    Dashboard.hideLoadingMsg();
+                    Dashboard.alert('Failed to load Field Language configuration.');
+                });
+            }
+
+            document.querySelector('#FieldLangConfigPage').addEventListener('pageshow', function () {
+                load(this);
+            });
+
+            document.querySelector('#FieldLangConfigForm').addEventListener('submit', function (e) {
+                e.preventDefault();
+                Dashboard.showLoadingMsg();
+
+                var page = document.querySelector('#FieldLangConfigPage');
+
+                ApiClient.getPluginConfiguration(pluginId).then(function (config) {
+                    config.TmdbApiKey = page.querySelector('#txtTmdbApiKey').value.trim();
+                    config.Libraries = collectRules(page.querySelector('#FieldLangRules'));
+
+                    ApiClient.updatePluginConfiguration(pluginId, config).then(function (result) {
+                        Dashboard.processPluginConfigurationUpdateResult(result);
+                    });
+                });
+
+                return false;
+            });
+        })();
+    </script>
+</div>
+</body>
+</html>

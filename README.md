@@ -20,17 +20,25 @@ than blanked.
 
 ## Requirements
 
-- Jellyfin 10.11.x
+- Jellyfin 12.x (plugin 2.x) or Jellyfin 10.11.x (plugin 1.x)
 - A TMDb API key (free, v3). Jellyfin's own key is compiled into the server assembly and can't be
   reached from a plugin.
 
 ## Install
 
-Download the release, drop `Jellyfin.Plugin.FieldLang.dll` and `meta.json` into
-`<config>/plugins/Field Language_1.0.0.0/`, restart the server.
+Dashboard → Plugins → Repositories → add:
 
-Then in Dashboard → Plugins → Field Language: paste your TMDb key, expand a library, put a language
-code next to the fields you want, save.
+```
+https://raw.githubusercontent.com/rbcetin/jellyfin-plugin-fieldlang/main/manifest.json
+```
+
+Then install Field Language from the catalogue and restart.
+
+Or do it by hand: unzip the [release](https://github.com/rbcetin/jellyfin-plugin-fieldlang/releases)
+into `<config>/plugins/Field Language_<version>/` and restart.
+
+Either way, finish in Dashboard → Plugins → Field Language: paste your TMDb key, expand a library,
+put a language code next to the fields you want, save.
 
 Rules are applied by the **Apply per-field metadata languages** scheduled task, which runs daily.
 Run it from Dashboard → Scheduled Tasks to apply a change immediately.
@@ -73,11 +81,11 @@ so there's no UI to update.
 ## Build
 
 ```bash
-docker run --rm -v "$PWD":/src -w /src mcr.microsoft.com/dotnet/sdk:9.0 \
+docker run --rm -v "$PWD":/src -w /src mcr.microsoft.com/dotnet/sdk:10.0 \
   dotnet build Jellyfin.Plugin.FieldLang/Jellyfin.Plugin.FieldLang.csproj -c Release
 ```
 
-Output lands in `Jellyfin.Plugin.FieldLang/bin/Release/net9.0/`.
+Output lands in `Jellyfin.Plugin.FieldLang/bin/Release/net10.0/`.
 
 ## Prior art
 
@@ -89,6 +97,19 @@ Long-standing upstream requests for the same thing:
 [#10076](https://github.com/jellyfin/jellyfin/issues/10076),
 [jellyfin-web#332](https://github.com/jellyfin/jellyfin-web/issues/332),
 [#16400](https://github.com/jellyfin/jellyfin/issues/16400).
+
+## AI disclosure
+
+This plugin was written with substantial AI assistance (Claude), as
+[Jellyfin's LLM policy](https://jellyfin.org/docs/general/contributing/llm-policies/) asks
+third-party projects to state.
+
+It is not untested output. It was verified end to end against a live Jellyfin 10.11.11 library —
+699 items swept, titles left in English while descriptions came back in Turkish, and fields with no
+data in the target language left alone rather than blanked. The task-versus-provider design came
+from reading `MetadataService.ExecuteRemoteProviders` rather than guessing at it.
+
+Bugs are mine. Issues and pull requests welcome.
 
 ## License
 
